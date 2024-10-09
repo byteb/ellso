@@ -13,10 +13,18 @@ from ell.util.verbosity import model_usage_logger_post_end, model_usage_logger_p
 from functools import wraps
 from typing import Any, Dict, Optional, List, Callable, Tuple, Union
 
-def complex(model: str, client: Optional[Any] = None, tools: Optional[List[Callable]] = None, exempt_from_tracking=False, post_callback: Optional[Callable] = None, **api_params):
+
+def complex(model: str,
+            client: Optional[Any] = None,
+            tools: Optional[List[Callable]] = None,
+            exempt_from_tracking=False,
+            post_callback: Optional[Callable] = None,
+            stream_callback: Optional[Callable] = None,
+            **api_params):
     default_client_from_decorator = client
     default_model_from_decorator = model
     default_api_params_from_decorator = api_params
+
     def parameterized_lm_decorator(
         prompt: LMP,
     ) -> Callable[..., Union[List[Message], Message]]:
@@ -25,7 +33,7 @@ def complex(model: str, client: Optional[Any] = None, tools: Optional[List[Calla
         @wraps(prompt)
         def model_call(
             *prompt_args,
-            _invocation_origin : Optional[str] = None,
+            _invocation_origin: Optional[str] = None,
             client: Optional[Any] = None,
             api_params: Optional[Dict[str, Any]] = None,
             lm_params: Optional[DeprecationWarning] = None,
@@ -34,16 +42,17 @@ def complex(model: str, client: Optional[Any] = None, tools: Optional[List[Calla
             # XXX: Deprecation in 0.1.0
             if lm_params:
                 raise DeprecationWarning("lm_params is deprecated. Use api_params instead.")
-        
+
             # promt -> str
             res = prompt(*prompt_args, **prompt_kwargs)
             # Convert prompt into ell messages
-            messages = _get_messages(res, prompt) 
-            
+            messages = _get_messages(res, prompt)
+
             # XXX: move should log to a logger.
             should_log = not exempt_from_tracking and config.verbose
             # Cute verbose logging.
-            if should_log: model_usage_logger_pre(prompt, prompt_args, prompt_kwargs, "[]", messages) #type: ignore
+            if should_log:
+                model_usage_logger_pre(prompt, prompt_args, prompt_kwargs, "[]", messages)  # type: ignore
 
             # Call the model.
             # Merge API params
@@ -55,7 +64,7 @@ def complex(model: str, client: Optional[Any] = None, tools: Optional[List[Calla
                 # XXX: Could change behaviour of overriding ell params for dyanmic tool calls.
                 model=merged_api_params.pop("model", default_model_from_decorator),
                 messages=messages,
-                client = merged_client,
+                client=merged_client,
                 api_params=merged_api_params,
                 tools=tools or [],
             )
@@ -63,26 +72,28 @@ def complex(model: str, client: Optional[Any] = None, tools: Optional[List[Calla
             provider = config.get_provider_for(ell_call.client)
             assert provider is not None, f"No provider found for client {ell_call.client}."
 
-            if should_log: model_usage_logger_post_start(n)
+            if should_log:
+                model_usage_logger_post_start(n)
             with model_usage_logger_post_intermediate(n) as _logger:
-                (result, final_api_params, metadata) = provider.call(ell_call, origin_id=_invocation_origin, logger=_logger if should_log else None)
+                def _stream_callback(chunk: str, is_refusal: bool = False):
+                    _logger(chunk, is_refusal)
+                    if stream_callback:
+                        stream_callback(chunk, is_refusal)
+                (result, final_api_params, metadata) = provider.call(ell_call, origin_id=_invocation_origin, logger=_stream_callback if should_log else None)
                 if isinstance(result, list) and len(result) == 1:
                     result = result[0]
-                
+
             result = post_callback(result) if post_callback else result
             if should_log:
                 model_usage_logger_post_end()
             #
-            #  These get sent to track. This is wack.           
+            #  These get sent to track. This is wack.
             return result, final_api_params, metadata
 
-
-  
-        model_call.__ell_api_params__ = default_api_params_from_decorator #type: ignore
-        model_call.__ell_func__ = prompt #type: ignore
-        model_call.__ell_type__ = LMPType.LM #type: ignore
-        model_call.__ell_exempt_from_tracking = exempt_from_tracking #type: ignore
- 
+        model_call.__ell_api_params__ = default_api_params_from_decorator  # type: ignore
+        model_call.__ell_func__ = prompt  # type: ignore
+        model_call.__ell_type__ = LMPType.LM  # type: ignore
+        model_call.__ell_exempt_from_tracking = exempt_from_tracking  # type: ignore
 
         if exempt_from_tracking:
             return model_call
@@ -92,14 +103,13 @@ def complex(model: str, client: Optional[Any] = None, tools: Optional[List[Calla
     return parameterized_lm_decorator
 
 
-
 def _get_messages(prompt_ret: Union[str, list[MessageOrDict]], prompt: LMP) -> list[Message]:
     """
     Helper function to convert the output of an LMP into a list of Messages.
     """
     if isinstance(prompt_ret, str):
         has_system_prompt = prompt.__doc__ is not None and prompt.__doc__.strip() != ""
-        messages =     [Message(role="system", content=[ContentBlock(text=_lstr(prompt.__doc__ ) )])] if has_system_prompt else []
+        messages = [Message(role="system", content=[ContentBlock(text=_lstr(prompt.__doc__))])] if has_system_prompt else []
         return messages + [
             Message(role="user", content=[ContentBlock(text=prompt_ret)])
         ]
@@ -109,6 +119,7 @@ def _get_messages(prompt_ret: Union[str, list[MessageOrDict]], prompt: LMP) -> l
         ), "Need to pass a list of Messages to the language model"
         return prompt_ret
 
+
 def _client_for_model(
     model: str,
     client: Optional[Any] = None,
@@ -117,13 +128,14 @@ def _client_for_model(
     # XXX: Move to config to centralize api keys etc.
     if not client:
         client, was_fallback = config.get_client_for(model)
-        
+
         # XXX: Wrong.
         if not client and not was_fallback:
             raise RuntimeError(_no_api_key_warning(model, _name, '', long=True, error=True))
-    
+
     if client is None:
-        raise ValueError(f"No client found for model '{model}'. Ensure the model is registered using 'register_model' in 'config.py' or specify a client directly using the 'client' argument in the decorator or function call.")
+        raise ValueError(f"No client found for model '{
+                         model}'. Ensure the model is registered using 'register_model' in 'config.py' or specify a client directly using the 'client' argument in the decorator or function call.")
     return client
 
 
@@ -197,7 +209,7 @@ Usage Modes and Examples:
             ell.user(f"Write a short story based on this prompt: {prompt}")
         ]
 
-    story : ell.Message = generate_story("A robot discovers emotions") 
+    story : ell.Message = generate_story("A robot discovers emotions")
     print(story.text)  # Access the text content of the last message
 
 2. Multi-turn Conversation:
@@ -237,11 +249,11 @@ Usage Modes and Examples:
         ell.user("What's the weather like in New York?")
     ]
     response : ell.Message = weather_assistant(conversation)
-    
+
     if response.tool_calls:
         tool_results = response.call_tools_and_collect_as_message()
         print("Tool results:", tool_results.text)
-        
+
         # Continue the conversation with tool results
         final_response = weather_assistant(conversation + [response, tool_results])
         print("Final response:", final_response.text)
